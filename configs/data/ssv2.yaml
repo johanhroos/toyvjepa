@@ -1,0 +1,8 @@
+name: ssv2
+dataset_cls: toyjepa.datasets.SomethingSomethingV2
+modality: video
+root: ${paths.data_root}/something-something-v2
+
+target_fps: 8
+quantization_interval: 4
+overwrite_manifest: false

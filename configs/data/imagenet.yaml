@@ -1,0 +1,8 @@
+name: imagenet
+dataset_cls: toyjepa.datasets.ImageNet
+modality: image
+root: ${paths.data_root}/ILSVRC
+
+target_fps: null
+quantization_interval: null
+overwrite_manifest: false

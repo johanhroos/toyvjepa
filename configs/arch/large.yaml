@@ -1,0 +1,33 @@
+name: jepalarge
+encoder:
+    in_channels: 3
+    d_embed: 1024
+    depth: 24
+    num_heads: 16
+    mlp_ratio: 4.0
+    patch_size: 16
+    tubelet_size: 2
+    num_registers: 8
+    qkv_bias: true
+    qk_norm: true
+    gated_attn: true
+    peri_norm: true
+    drop_path_rate: 0.0
+    p_drop: 0.0
+    p_drop_attn: 0.0
+predictor:
+    d_embed: 512
+    depth: 12
+    num_heads: 16
+    mlp_ratio: 4.0
+    qkv_bias: true
+    qk_norm: true
+    gated_attn: true
+    peri_norm: true
+    p_drop: 0.0
+    p_drop_attn: 0.0
+
+ref_img_size: [224, 224]
+num_masking_policies: 2
+use_rope: true
+interpolate_rope: true
