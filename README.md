@@ -93,4 +93,4 @@ uv run python -m toyjepa.train --multirun \
 
 ## Acknowledgements
 
-Small parts of `toyjepa/models/encoder.py` and `toyjepa/models/predictor.py` are adapted from [V-JEPA 2](https://github.com/facebookresearch/vjepa2).
+Small parts of `toyjepa/models/encoder.py` and `toyjepa/models/predictor.py` are adapted from [V-JEPA 2](https://github.com/facebookresearch/vjepa2). The attentive probe toyvjepa/models/probes.py, and CrossAttention and CrossAttentionBlock in toyvjepa/models/transformer.py match V-JEPA 2.1 attentive classifier, with QK-norm added.
