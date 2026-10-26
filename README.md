@@ -7,13 +7,13 @@ The thesis pretrains the same model on Something-Something-v2 and ImageNet-1k wi
 Some differences from V-JEPA 2.1: every block has QK-norm, a per-head sigmoid gate on the attention output and a LayerNorm on each attention and MLP output. These stabilize training, especially using Muon.
 
 # Results
-![SSv2 probe accuracy against training compute](probe_vs_flops.png)
+![SSv2 probe accuracy against training compute](assets/probe_vs_flops.png)
 *SSv2 linear-probe top-1 against estimated training compute (log scale) for three
 seed pairs, probed after every epoch. Circles mark the matched checkpoints: AdamW at its last
 stable-LR epoch (20) and the Muon checkpoint with the closest probe accuracy (epochs 7, 9 and 9),
 joined by dotted lines. Muon reaches the same accuracy with 2.41× fewer FLOPs.*
 
-![Representation similarity](cka_levels.png)
+![Representation similarity](assets/cka_levels.png)
 *Linear CKA between the mean-pooled features of the frozen teacher encoders at each
 hierarchical level (encoder blocks 3, 6, 9 and 12) on the SSv2 test split, for the matched
 checkpoints (left) and after 24 epochs (right). Lines are means over three pairs, small markers
@@ -21,7 +21,7 @@ single pairs. AdamW and Muon are less similar to each other than two runs of the
 with different seeds, mainly in the early blocks, and Muon moves further from its initialization
 than AdamW.*
 
-![Transfer to Diving48](test_curves.png)
+![Transfer to Diving48](assets/test_curves.png)
 *Diving48 test top-1 over 50 probe epochs for the frozen encoders at the
 matched checkpoints, with an attentive probe (left) and a mean-pooled
 linear probe (right, on its own y-scale). Dash-dotted: the random initialization of the seed-3
