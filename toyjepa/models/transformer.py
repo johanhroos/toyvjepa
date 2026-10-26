@@ -145,6 +145,57 @@ class SelfAttention(nn.Module):
         return self.dropout(x)
 
 
+class CrossAttention(nn.Module):
+    """Multi-head attention from query tokens to a token sequence, with optional QK-norm and no output projection.
+
+    As in the V-JEPA 2 attentive probe, the attention output goes straight back to the query.
+    Return shape: (B Nq d_model).
+    """
+
+    def __init__(self, d_model, num_heads, qkv_bias=False, qk_norm=False, norm_layer=nn.LayerNorm):
+        super().__init__()
+        self.num_heads = num_heads
+        self.q = nn.Linear(d_model, d_model, bias=qkv_bias)
+        self.kv = nn.Linear(d_model, d_model * 2, bias=qkv_bias)
+        head_dim = d_model // num_heads
+        self.q_norm = norm_layer(head_dim) if qk_norm else nn.Identity()
+        self.k_norm = norm_layer(head_dim) if qk_norm else nn.Identity()
+
+    def forward(self, q, x):
+        q = rearrange(self.q(q), "B N (H d) -> B H N d", H=self.num_heads)
+        k, v = rearrange(self.kv(x), "B N (vec H d) -> vec B H N d", vec=2, H=self.num_heads)
+        q, k = self.q_norm(q), self.k_norm(k)
+        attn = F.scaled_dot_product_attention(q, k, v)
+        return rearrange(attn, "B H N d -> B N (H d)")
+
+
+class CrossAttentionBlock(nn.Module):
+    """Pre-norm cross-attention block: queries attend to the normalized tokens, then an MLP.
+
+    Only the attended tokens are normalized before the attention; the queries are not.
+    """
+
+    def __init__(
+        self,
+        d_model,
+        num_heads,
+        mlp_ratio=4.0,
+        act_layer=nn.GELU,
+        norm_layer=nn.LayerNorm,
+        qkv_bias=False,
+        qk_norm=False,
+    ):
+        super().__init__()
+        self.norm1 = norm_layer(d_model)
+        self.xattn = CrossAttention(d_model, num_heads, qkv_bias=qkv_bias, qk_norm=qk_norm, norm_layer=norm_layer)
+        self.norm2 = norm_layer(d_model)
+        self.ffn = FFN(d_model, int(mlp_ratio * d_model), d_model, act_layer)
+
+    def forward(self, q, x):
+        q = q + self.xattn(q, self.norm1(x))
+        return q + self.ffn(self.norm2(q))
+
+
 class TransformerBlock(nn.Module):
     """A single pre-norm self-attention block, optionally with peri-norm.
 

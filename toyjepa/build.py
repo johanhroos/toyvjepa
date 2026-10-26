@@ -10,8 +10,8 @@ import torch.nn as nn
 from hydra.utils import get_class
 from torch.utils.data import DataLoader, Dataset, get_worker_info
 
-from toyjepa.config import ModelConfig, PretrainConfig
-from toyjepa.datasets import JEPABatchSampler, JEPACollator, JEPAConcatDataset
+from toyjepa.config import Diving48EvalConfig, ModelConfig, PretrainConfig
+from toyjepa.datasets import Diving48, JEPABatchSampler, JEPACollator, JEPAConcatDataset
 from toyjepa.masks import sample_mask_tok_ids
 from toyjepa.models.encoder import ViTEncoder
 from toyjepa.models.predictor import ViTPredictor
@@ -125,6 +125,32 @@ def build_video_transforms(output_size: tuple[int, int], *, training: bool = Tru
     )
 
 
+def build_diving48_transforms(
+    output_size: tuple[int, int],
+    *,
+    training: bool,
+    crop_scale: tuple[float, float],
+    crop_ratio: tuple[float, float],
+) -> A.Compose:
+    """Squash to 256x256 as in pretraining, then a random resized crop and flip for training, else a center crop.
+
+    Called with images=video, Albumentations applies the same crop and flip to every frame.
+    """
+    output_h, output_w = output_size
+    if training:
+        crop = A.RandomResizedCrop(size=(output_h, output_w), scale=crop_scale, ratio=crop_ratio)
+    else:
+        crop = A.CenterCrop(height=output_h, width=output_w)
+    flip = A.HorizontalFlip(p=0.5 if training else 0.0)
+    return A.Compose(
+        [
+            A.Resize(height=256, width=256),
+            crop,
+            flip,
+        ]
+    )
+
+
 def build_datasets(
     cfg: PretrainConfig,
     split: str,
@@ -212,6 +238,54 @@ def build_dataloader(
         dataset=dataset,
         batch_sampler=sampler,
         collate_fn=collate_fn,
+        num_workers=cfg.loader.num_workers,
+        pin_memory=cfg.loader.pin_memory,
+        prefetch_factor=cfg.loader.prefetch_factor,
+        worker_init_fn=seed_worker_transforms,
+        generator=torch.Generator(),
+    )
+
+
+def build_diving48_dataloader(
+    cfg: Diving48EvalConfig,
+    arch: ModelConfig,
+    split: str,
+    shuffle: bool,
+    *,
+    augment: bool,
+) -> DataLoader:
+    """Diving48 loader for transfer probes; Diving48 stays out of cfg.data, so it never enters pretraining."""
+    output_size = tuple(arch.ref_img_size)
+    dataset = JEPAConcatDataset(
+        [
+            Diving48(
+                root=Path(cfg.data.root),
+                split=split,
+                label_version=cfg.data.label_version,
+                target_fps=cfg.data.target_fps,
+                quantization_interval=cfg.data.quantization_interval,
+                output_size=output_size,
+                tubelet_size=arch.encoder.tubelet_size,
+                patch_size=arch.encoder.patch_size,
+                transforms=build_diving48_transforms(
+                    output_size,
+                    training=augment,
+                    crop_scale=tuple(cfg.data.crop_scale),
+                    crop_ratio=tuple(cfg.data.crop_ratio),
+                ),
+                overwrite_manifest=cfg.data.overwrite_manifest,
+            )
+        ]
+    )
+    sampler = JEPABatchSampler(
+        sample_specs=dataset.sample_specs,
+        token_budget=cfg.loader.token_budget,
+        shuffle=shuffle,
+    )
+    return DataLoader(
+        dataset=dataset,
+        batch_sampler=sampler,
+        collate_fn=JEPACollator(),
         num_workers=cfg.loader.num_workers,
         pin_memory=cfg.loader.pin_memory,
         prefetch_factor=cfg.loader.prefetch_factor,

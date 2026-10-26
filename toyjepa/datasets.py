@@ -26,6 +26,7 @@ type BoundingBox = dict[str, int]
 type ItemMetadataDict = dict[str, int | float | str | None | list[BoundingBox]]
 type TokenizedShape = tuple[int, int, int]
 type Split = Literal["train", "validation", "test"]
+type DivingLabelVersion = Literal["v1", "v2"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,6 +272,221 @@ class SomethingSomethingV2(Dataset):
             output_dtype=torch.uint8,
         )
         indices = torch.linspace(start=0, end=sample["num_frames"] - 1, steps=sample["frames_sampled"]).round().long()
+        frame_batch = decoder.get_frames_at(indices)
+        video = rearrange(frame_batch.data, "T C H W -> T H W C").contiguous().numpy()
+        if self.transforms is not None:
+            video = self.transforms(images=video)["images"]
+        video = rearrange(torch.from_numpy(np.ascontiguousarray(video)), "T H W C -> C T H W").contiguous()
+        _, _, h, w = video.shape
+        if (h, w) != (self.output_h, self.output_w):
+            raise ValueError(
+                f"Output dimensions in the video tensor don't match given output shape ({self.output_h, self.output_w})"
+            )
+
+        item: DatasetItem = {
+            "dataset_name": spec.dataset_name,
+            "item": video,
+            "metadata": sample,
+            "modality": spec.modality,
+            "color_channels": spec.color_channels,
+            "tokenized_shape": spec.tokenized_shape,
+        }
+        return item
+
+
+def create_diving48_manifest(
+    *,
+    root: Path,
+    split: Literal["train", "test"],
+    label_version: DivingLabelVersion,
+    target_fps: int,
+    quantization_interval: int,
+    tubelet_size: int = 2,
+    overwrite: bool = False,
+) -> Path:
+    """Creates jsonl file with information about each clip of an official Diving48 split.
+
+    Frames are sampled as for SSv2: the whole annotated frame range at min(target_fps, source fps),
+    rounded to a multiple of quantization_interval.
+
+    Label files in dataset:
+        Diving48_vocab.json
+            -> class index to dive, e.g. ["Back", "15som", "05Twis", "FREE"]
+        Diving48_train.json / Diving48_test.json (V1)
+        Diving48_V2_train.json / Diving48_V2_test.json (V2: relabelled, poorly segmented clips removed)
+            -> {"vid_name": "VNvb5oLOpLg_00000", "label": 19, "start_frame": 0, "end_frame": 156}
+    Video files in dataset:
+        Diving48/rgb/<vid_name>.mp4
+    """
+    if quantization_interval % tubelet_size != 0:
+        raise ValueError("quantization_interval must be divisible by tubelet_size")
+    prefix = "Diving48_V2" if label_version == "v2" else "Diving48"
+    label_path = root / f"{prefix}_{split}.json"
+    vocab_path = root / "Diving48_vocab.json"
+    video_dir = root / "Diving48" / "rgb"
+    manifest_path = root / "manifests" / f"{label_version}_{split}_fps{target_fps}_q{quantization_interval}.jsonl"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    if manifest_path.exists() and not overwrite:
+        return manifest_path
+
+    print(f"Creating Diving48 {label_version} {split} split manifest. This may take a few minutes...")
+
+    for path in (label_path, vocab_path):
+        if not path.exists():
+            raise FileNotFoundError(f"Could not find Diving48 label file: {path}")
+    with label_path.open("r", encoding="utf-8") as f:
+        labels = json.load(f)
+    with vocab_path.open("r", encoding="utf-8") as f:
+        vocab = json.load(f)
+
+    rows_written = 0
+    missing_videos = 0
+    tmp_path = manifest_path.with_name(f"{manifest_path.name}.tmp")
+    with tmp_path.open("w", encoding="utf-8") as f:
+        for row in tqdm(labels, desc=f"Processing Diving48 {label_version} {split} split"):
+            video_path = video_dir / f"{row['vid_name']}.mp4"
+            if not video_path.exists():
+                missing_videos += 1
+                continue
+            decoder = VideoDecoder(
+                video_path,
+                dimension_order="NCHW",
+                num_ffmpeg_threads=1,
+                device="cpu",
+            )
+            decoder_metadata = decoder.metadata
+            source_fps = decoder_metadata.average_fps
+            num_frames = len(decoder)
+            start_frame, end_frame = row["start_frame"], row["end_frame"]
+            if not 0 <= start_frame <= end_frame < num_frames:
+                raise ValueError(f"{video_path} has {num_frames} frames, annotated range {start_frame}-{end_frame}")
+            clip_frames = end_frame - start_frame + 1
+            duration_seconds = clip_frames / source_fps
+
+            sampled_fps = min(float(target_fps), float(source_fps))
+            raw_frames = round(duration_seconds * sampled_fps)
+            frames_sampled = round(raw_frames / quantization_interval) * quantization_interval
+            max_frames = clip_frames // quantization_interval * quantization_interval
+            if max_frames == 0:
+                missing_videos += 1
+                continue
+            frames_sampled = min(max(quantization_interval, frames_sampled), max_frames)
+
+            manifest_row = {
+                "vid_name": row["vid_name"],
+                "video_path": str(video_path.relative_to(root)),
+                "modality": "video",
+                "label_name": " ".join(vocab[row["label"]]),
+                "label": row["label"],
+                "height": decoder_metadata.height,
+                "width": decoder_metadata.width,
+                "duration_seconds": duration_seconds,
+                "source_fps": source_fps,
+                "num_frames": num_frames,
+                "start_frame": start_frame,
+                "end_frame": end_frame,
+                "frames_sampled": frames_sampled,
+            }
+            f.write(json.dumps(manifest_row, ensure_ascii=False))
+            f.write("\n")
+            rows_written += 1
+    tmp_path.replace(manifest_path)
+    print(
+        f"Created {manifest_path}\n",
+        f"{split} split length: {rows_written}\n",
+        f"Missing or too short videos count: {missing_videos}",
+    )
+    return manifest_path
+
+
+class Diving48(Dataset):
+    """Diving48 clips decoded with TorchCodec, for frozen-encoder transfer probes.
+
+    Args:
+        split
+            the official train or test list; Diving48 has no validation split
+        label_version
+            v1 or v2 annotations; v2 corrects labels and drops poorly segmented clips
+        target_fps
+            target fps; can cause variable length outputs due to differing video durations
+        transforms
+            an Albumentations transform called with images=video
+
+    Output:
+        Each item is a DatasetItem with a uint8 clip shaped C,T,H,W.
+
+    Frames are sampled as for SomethingSomethingV2, over each clip's annotated frame range.
+    Clip length is not capped, so long dives give clips longer than any seen in pretraining.
+    """
+
+    def __init__(
+        self,
+        *,
+        root: Path,
+        split: Literal["train", "test"],
+        label_version: DivingLabelVersion = "v2",
+        target_fps: int = 8,
+        quantization_interval: int = 4,
+        output_size: tuple[int, int] = (224, 224),
+        tubelet_size: int = 2,
+        patch_size: int = 16,
+        transforms=None,
+        overwrite_manifest: bool = False,
+    ) -> None:
+        if split not in ("train", "test"):
+            raise ValueError(f"Diving48 has only train and test splits, got {split!r}")
+        self.root = root.resolve()
+        self.manifest_path = create_diving48_manifest(
+            root=self.root,
+            split=split,
+            label_version=label_version,
+            target_fps=target_fps,
+            quantization_interval=quantization_interval,
+            tubelet_size=tubelet_size,
+            overwrite=overwrite_manifest,
+        )
+        with (self.root / "Diving48_vocab.json").open("r", encoding="utf-8") as f:
+            self.classes = [" ".join(dive) for dive in json.load(f)]
+
+        self.output_h, self.output_w = output_size
+        self.transforms = transforms
+        self.metadata = read_jsonl(self.manifest_path)
+        self.sample_specs = [
+            SampleSpec(
+                dataset_name="diving48",
+                modality="video",
+                color_channels=3,
+                tokenized_shape=(
+                    row["frames_sampled"] // tubelet_size,
+                    self.output_h // patch_size,
+                    self.output_w // patch_size,
+                ),
+            )
+            for row in self.metadata
+        ]
+
+    def __len__(self) -> int:
+        return len(self.metadata)
+
+    def __getitem__(
+        self,
+        idx: int,
+    ) -> DatasetItem:
+        sample = self.metadata[idx]
+        spec = self.sample_specs[idx]
+
+        decoder = VideoDecoder(
+            self.root / sample["video_path"],
+            dimension_order="NCHW",
+            num_ffmpeg_threads=1,
+            device="cpu",
+            output_dtype=torch.uint8,
+        )
+        indices = (
+            torch.linspace(start=sample["start_frame"], end=sample["end_frame"], steps=sample["frames_sampled"])
+            .round()
+            .long()
+        )
         frame_batch = decoder.get_frames_at(indices)
         video = rearrange(frame_batch.data, "T C H W -> T H W C").contiguous().numpy()
         if self.transforms is not None:

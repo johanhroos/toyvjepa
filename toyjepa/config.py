@@ -211,3 +211,95 @@ class PretrainConfig:
 
 
 ConfigStore.instance().store(name="pretrain_config", node=PretrainConfig)
+
+
+class CheckpointSet(StrEnum):
+    best_matched = auto()
+    matched = auto()
+    final = auto()
+    init = auto()
+
+
+class DivingLabelVersion(StrEnum):
+    v1 = auto()
+    v2 = auto()
+
+
+class ProbeLevels(StrEnum):
+    tokens = auto()
+    channels = auto()
+
+
+class ProbeKind(StrEnum):
+    attentive = auto()
+    linear = auto()
+
+
+@dataclass
+class Diving48DataConfig:
+    root: str
+    label_version: DivingLabelVersion
+    target_fps: int
+    quantization_interval: int
+    crop_scale: list[float]
+    crop_ratio: list[float]
+    overwrite_manifest: bool
+
+
+@dataclass
+class AttentiveProbeOptimConfig:
+    name: OptimName | None
+    lr: float
+    final_lr: float
+    wd: float
+    betas: list[float]
+    eps: float
+
+
+@dataclass
+class Diving48LinearProbeConfig:
+    epochs: int
+    batch_size: int
+    cache_dtype: CacheDtype
+    optim: LinearProbeOptimConfig
+
+
+@dataclass
+class Diving48ProbeConfig:
+    kind: ProbeKind
+    seed: int | None
+    epochs: int
+    depth: int
+    num_heads: int
+    mlp_ratio: float
+    qk_norm: bool
+    num_classes: int
+    levels: ProbeLevels
+    segment_frames: int
+    gradient_accumulation_steps: int
+    log_every: int
+    max_train_batches: int | None
+    max_eval_batches: int | None
+    optim: AttentiveProbeOptimConfig
+    linear: Diving48LinearProbeConfig
+
+
+@dataclass
+class EvalTrainerConfig:
+    accelerator: Accelerator
+    precision: Precision
+    compile: bool
+
+
+@dataclass
+class Diving48EvalConfig:
+    paths: PathsConfig
+    checkpoint_sets: list[CheckpointSet]
+    checkpoints: list[str] | None
+    trainer: EvalTrainerConfig
+    loader: LoaderConfig
+    data: Diving48DataConfig
+    probe: Diving48ProbeConfig
+
+
+ConfigStore.instance().store(name="evaluate_diving48_config", node=Diving48EvalConfig)
