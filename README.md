@@ -1,4 +1,4 @@
-# ToyJEPA
+# ToyVJEPA
 
 AdamW vs. Muon for V-JEPA-style self-supervised video pretraining.
 
